@@ -1,5 +1,7 @@
 # One package per line. Add packages only when this machine actually needs them.
 wezterm
+kitty
+imagemagick
 
 # Shell and CLI stack used by github.com/yesitsfebreeze/.files
 nushell

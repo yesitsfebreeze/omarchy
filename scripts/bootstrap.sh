@@ -41,7 +41,7 @@ bash "$dotfiles/install.sh"
 [[ "$(getent passwd "$USER" | cut -d: -f7)" == /usr/bin/nu ]] || sudo usermod -s /usr/bin/nu "$USER"
 
 # Config files owned by this repository, linked into ~/.config.
-for path in xdg-terminals.list fontconfig/conf.d/60-system-font.conf omarchy/themed/tinty-scheme.yaml.tpl omarchy/hooks/theme-set.d/tinty omarchy/hooks/theme-set.d/black-background hypr/main-terminal.lua; do
+for path in xdg-terminals.list fontconfig/conf.d/60-system-font.conf omarchy/themed/tinty-scheme.yaml.tpl omarchy/hooks/theme-set.d/tinty hypr/wallpaper-terminal.lua hypr/animations.lua omarchy/extensions/omarchy-menu.jsonc; do
   target="$HOME/.config/$path"
   if [[ -e "$target" && ! -L "$target" ]]; then
     mv "$target" "$target.bak.$(date +%s)"
@@ -49,14 +49,15 @@ for path in xdg-terminals.list fontconfig/conf.d/60-system-font.conf omarchy/the
   mkdir -p "$(dirname "$target")"
   ln -sfn "$repo_dir/config/$path" "$target"
 done
-# Hyprland loads the main-terminal module after the user overrides.
-grep -qF 'require("hypr.main-terminal")' "$HOME/.config/hypr/hyprland.lua" ||
-  printf '\nrequire("hypr.main-terminal")\n' >>"$HOME/.config/hypr/hyprland.lua"
+# Hyprland modules from config/hypr, loaded after the user overrides.
+for module in wallpaper-terminal animations; do
+  grep -qF "require(\"hypr.$module\")" "$HOME/.config/hypr/hyprland.lua" ||
+    printf '\nrequire("hypr.%s")\n' "$module" >>"$HOME/.config/hypr/hyprland.lua"
+done
 
 # Theme: installed after the links above, so the tinty template and hook see it.
 [[ -d "$HOME/.config/omarchy/themes/vesper" ]] || omarchy theme install https://github.com/thmoee/omarchy-vesper-theme.git
 [[ "$(omarchy theme current)" == Vesper ]] || omarchy theme set vesper
-bash "$repo_dir/config/omarchy/hooks/theme-set.d/black-background"
 
 bash "$repo_dir/scripts/agents.sh"
 bash "$repo_dir/scripts/kern.sh"

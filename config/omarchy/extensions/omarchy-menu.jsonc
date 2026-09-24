@@ -1,0 +1,12 @@
+{
+  // Omarchy menu extensions (this repo, linked into ~/.config/omarchy/extensions).
+  // Format: /usr/share/omarchy/default/omarchy/omarchy-menu.jsonc.
+
+  // Blur of the wallpaper terminal's background (bin/wallpaper-terminal).
+  "style.terminal-blur": {"icon":"󰂵","label":"Terminal Blur","aliases":["blur"]},
+  "style.terminal-blur.off": {"icon":"","label":"Off","action":"$HOME/.local/share/omarchy/bin/wallpaper-terminal blur 0","checked":"[[ $($HOME/.local/share/omarchy/bin/wallpaper-terminal blur) == 0 ]]"},
+  "style.terminal-blur.light": {"icon":"","label":"Light","action":"$HOME/.local/share/omarchy/bin/wallpaper-terminal blur 4","checked":"[[ $($HOME/.local/share/omarchy/bin/wallpaper-terminal blur) == 4 ]]"},
+  "style.terminal-blur.medium": {"icon":"","label":"Medium","action":"$HOME/.local/share/omarchy/bin/wallpaper-terminal blur 8","checked":"[[ $($HOME/.local/share/omarchy/bin/wallpaper-terminal blur) == 8 ]]"},
+  "style.terminal-blur.strong": {"icon":"","label":"Strong","action":"$HOME/.local/share/omarchy/bin/wallpaper-terminal blur 16","checked":"[[ $($HOME/.local/share/omarchy/bin/wallpaper-terminal blur) == 16 ]]"},
+  "style.terminal-blur.heavy": {"icon":"","label":"Heavy","action":"$HOME/.local/share/omarchy/bin/wallpaper-terminal blur 32","checked":"[[ $($HOME/.local/share/omarchy/bin/wallpaper-terminal blur) == 32 ]]"}
+}

@@ -32,8 +32,13 @@ packages/pacman.txt   packages required by the machine
 packages/aur.txt      AUR packages required by the machine
 config/               files linked into ~/.config (default terminal, UI font,
                       Omarchy theme -> tinty/WezTerm template and hook,
-                      hypr/main-terminal.lua: fullscreen WezTerm behind a
-                      SUPER+TAB desktop overlay, black desktop background)
+                      hypr/wallpaper-terminal.lua + kitty/ + the Style menu
+                      extension: the wallpaper terminal;
+                      hypr/animations.lua: 250 ms ease-in-out quad everywhere)
+bin/wallpaper-terminal a fullscreen kitty panel between the wallpaper and the
+                      windows, running tmux over the blurred wallpaper (Style >
+                      Terminal Blur). SUPER+TAB: windows over it; SUPER+SHIFT+TAB:
+                      plain desktop; the same key again: back to the terminal
 decisions/            reasons that are not obvious from configuration
 scripts/bootstrap.sh  reconstruct the machine (packages, monospace font, agents)
 scripts/agents.sh     link agent/system.md into each agent's global instructions

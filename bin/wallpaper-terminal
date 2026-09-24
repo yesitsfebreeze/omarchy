@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# The wallpaper terminal: a fullscreen kitty panel on the Wayland `bottom`
+# layer, above Omarchy's wallpaper and below every window, running the main
+# tmux session (tmux-main, .files). Its background is the Omarchy wallpaper,
+# blurred; hiding it shows the wallpaper itself.
+#
+#   wallpaper-terminal run                        keep the panel and its background in sync (Hyprland autostart)
+#   wallpaper-terminal mode terminal|windows|desktop
+#       terminal  shown, has the keyboard         windows  shown, windows have the keyboard
+#       desktop   hidden                          (Hyprland sets these; config/hypr/wallpaper-terminal.lua)
+#   wallpaper-terminal blur [SIGMA]               print or set the blur (0 = none); the Style menu sets it
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+runtime="${XDG_RUNTIME_DIR:-/tmp}"
+sock="unix:$runtime/wallpaper-terminal"
+applied="$runtime/wallpaper-terminal.applied"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/wallpaper-terminal"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/wallpaper-terminal"
+wallpaper="$HOME/.local/state/omarchy/current/background"
+
+rc() { kitten @ --to "$sock" "$@"; }
+
+blur() {
+  local b
+  b="$(cat "$state/blur" 2>/dev/null || true)"
+  [[ $b =~ ^[0-9]+$ ]] && echo "$b" || echo 8
+}
+
+# Point $cache/current (what the kitty config loads) at the wallpaper, blurred,
+# and push it to a running panel when it changed.
+sync() {
+  local src sigma image
+  src="$(readlink -f "$wallpaper" 2>/dev/null)" || return 0
+  [[ -f $src ]] || return 0
+  sigma="$(blur)"
+  mkdir -p "$cache"
+  if ((sigma == 0)); then
+    image="$src"
+  else
+    image="$cache/$(printf '%s' "$src" | sha1sum | cut -c1-12)-$sigma.jpg"
+    # Decoded and blurred at 1280px (~1 s on a 4K JPEG); kitty scales it back up.
+    [[ -f $image ]] || magick -define jpeg:size=1280x1280 "$src" -resize '1280x1280>' -blur "0x$sigma" "$image"
+  fi
+  [[ "$(readlink "$cache/current" 2>/dev/null)" == "$image" ]] || ln -sfn "$image" "$cache/current"
+  [[ "$(cat "$applied" 2>/dev/null)" == "$image" ]] && return 0
+  if rc set-background-image --all --configured "$cache/current" >/dev/null 2>&1; then
+    printf '%s' "$image" >"$applied"
+  fi
+}
+
+case "${1:-}" in
+run)
+  # One panel: a second `run` (a manual start, a re-login) leaves the first alone.
+  exec 9>"$runtime/wallpaper-terminal.lock"
+  flock -n 9 || exit 0
+  sync
+  # Omarchy has no background-changed hook; poll the link like its renderer does.
+  (while sleep 1; do sync; done) &
+  trap 'kill $! 2>/dev/null' EXIT
+  while :; do
+    rm -f "$applied"
+    kitten panel --edge=center --layer=bottom --exclusive-zone=0 --focus-policy=not-allowed --app-id=wallpaper-terminal \
+      --config="$repo_dir/config/kitty/wallpaper-terminal.conf" --listen-on="$sock" \
+      "$HOME/.local/bin/tmux-main" || true
+    sleep 1
+  done
+  ;;
+mode)
+  case "${2:-}" in
+  terminal) rc resize-os-window --action=show; policy=exclusive ;;
+  windows) rc resize-os-window --action=show; policy=not-allowed ;;
+  desktop) rc resize-os-window --action=hide; policy=not-allowed ;;
+  *) echo "usage: wallpaper-terminal mode terminal|windows|desktop" >&2; exit 2 ;;
+  esac
+  rc resize-os-window --action=os-panel --incremental "focus-policy=$policy"
+  ;;
+blur)
+  if [[ -z ${2:-} ]]; then blur; exit 0; fi
+  [[ $2 =~ ^[0-9]+$ ]] || { echo "blur: SIGMA is a whole number" >&2; exit 2; }
+  mkdir -p "$state"
+  printf '%s\n' "$2" >"$state/blur"
+  sync
+  ;;
+*)
+  echo "usage: wallpaper-terminal run | mode terminal|windows|desktop | blur [SIGMA]" >&2
+  exit 2
+  ;;
+esac
