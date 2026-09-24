@@ -91,8 +91,9 @@ def rms(chunk):
 def utterance(chunks):
     """Raw s16 audio from the first loud chunk until END_SILENCE_S of quiet.
 
-    The noise floor is the quietest chunk seen before the current one, so
-    speech from the very first chunk still counts. Time is counted in audio,
+    The noise floor is learned only from quiet chunks, so speech from the
+    very first chunk still counts, and less than MIN_SPEECH_S of loudness
+    (the mic's start-up click, a cough) is ignored. Time is counted in audio,
     not wall clock, so a file behaves like the mic. Empty when nobody spoke.
     """
     audio, t, noise, spoke_at, quiet_since, loud_s = bytearray(), 0.0, 0.0, None, None, 0.0
