@@ -18,4 +18,8 @@ timeout 2 pw-record --raw --rate 16000 --channels 1 --format s16 - >"$tmp/mic.ra
 [[ -s "$tmp/mic.raw" ]] || { echo "no audio from the default microphone ($(pactl get-default-source))" >&2; exit 1; }
 echo "microphone: $(pactl get-default-source)"
 
+groq="no key (vosk only)"
+secret-tool lookup service groq key api >/dev/null 2>&1 && groq="key in keyring"
+echo "groq: $groq"
+
 echo "omarchy-voice checks passed."
