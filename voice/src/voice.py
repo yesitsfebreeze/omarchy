@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""omarchy-voice, phase 1: trigger -> record one utterance -> STT -> print ->
-TTS reply -> idle.
+"""omarchy-voice: trigger -> record one utterance -> STT -> the Claude session
+in tmux pane %0 -> its answer spoken -> idle.
 
   voice.py            press Enter to talk (temporary wake trigger)
   voice.py --file X   transcribe a 16 kHz mono WAV instead of the mic
   voice.py --say T    speak T and exit
+  voice.py --ask T    send T to the pane's Claude, print the spoken answer
 
 Recognition and speech run remotely on Groq (Whisper, Orpheus); this CPU is
 too slow for local models (decisions/voice-stt.md). Locally there is only
@@ -12,7 +13,12 @@ capture and a loudness check that ends the utterance. The key comes from
 GROQ_API_KEY or the keyring:
   secret-tool store --label='Groq API key' service groq key api
 
-No agent is called yet. Any failure is logged and the loop returns to idle.
+The utterance is typed into the Claude Code session running in the tmux pane
+(OMARCHY_VOICE_PANE, default %0), so every action is visible there and goes
+through that session's own permission prompts. The pane's state and
+transcript come from the tmux-claude-state hook (github.com/yesitsfebreeze/
+.files) as the pane options @claude and @claude_transcript. Any failure is
+logged and the loop returns to idle.
 """
 
 import array
@@ -44,6 +50,11 @@ TTS_MODEL = "canopylabs/orpheus-v1-english"
 TTS_VOICE = "troy"
 TTS_MAX_CHARS = 200  # per request, Groq's limit
 TIMEOUT_S = 20
+
+# The agent is the Claude Code session the user keeps in this tmux pane.
+PANE = os.environ.get("OMARCHY_VOICE_PANE", "%0")
+AGENT_TIMEOUT_S = 900
+SPOKEN_SENTENCES = 3
 
 
 class Failed(Exception):
@@ -195,8 +206,82 @@ def hear(chunks):
     return transcribe(audio) if audio else ""
 
 
-def reply_for(text):
-    return f"You said: {text}" if text else "I didn't catch that."
+def pane(fmt):
+    out = subprocess.run(["tmux", "display", "-p", "-t", PANE, fmt],
+                         capture_output=True, text=True, timeout=5)
+    if out.returncode:
+        raise Failed(f"tmux pane {PANE} is not available")
+    return out.stdout.strip()
+
+
+def answers_since(transcript, offset):
+    """Text of the assistant messages appended to the transcript after offset."""
+    texts = []
+    with open(transcript, "rb") as f:
+        f.seek(offset)
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            message = entry.get("message") or {}
+            if entry.get("type") == "assistant" and isinstance(message.get("content"), list):
+                texts += [b["text"] for b in message["content"] if b.get("type") == "text"]
+    return texts
+
+
+def spoken(text):
+    """The first SPOKEN_SENTENCES of an answer, without Markdown."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"[`*_#>|]|^\s*[-+]\s+|\[([^\]]*)\]\([^)]*\)", r"\1", text, flags=re.M)
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    short = " ".join(sentences[:SPOKEN_SENTENCES])
+    return short + (" The rest is in the pane." if len(sentences) > SPOKEN_SENTENCES else "")
+
+
+def ask(text, notify):
+    """Type text into the Claude session in PANE; return its final answer.
+
+    The session is the user's own, visible and under its own permission
+    prompts. Nothing is typed unless Claude is the pane's program and idle,
+    so speech never reaches a shell.
+    """
+    if pane("#{pane_current_command}") != "claude":
+        raise Failed(f"no Claude session in pane {PANE}")
+    if pane("#{@claude}") in ("working", "waiting"):
+        raise Failed("Claude is still busy")
+    transcript = pane("#{@claude_transcript}")
+    offset = os.path.getsize(transcript) if os.path.exists(transcript) else 0
+    subprocess.run(["tmux", "send-keys", "-t", PANE, "-l", text], check=True, timeout=5)
+    subprocess.run(["tmux", "send-keys", "-t", PANE, "Enter"], check=True, timeout=5)
+
+    started, seen, told = time.monotonic(), False, False
+    while time.monotonic() - started < AGENT_TIMEOUT_S:
+        time.sleep(0.5)
+        state = pane("#{@claude}")
+        seen = seen or state == "working"
+        if state == "waiting" and not told:
+            notify("Claude needs your approval in the pane.")
+            told = True
+        if seen and state == "done":
+            break
+    else:
+        raise Failed("Claude did not finish in time")
+    now = pane("#{@claude_transcript}")
+    texts = answers_since(now, offset if now == transcript else 0)
+    return spoken(texts[-1]) if texts else "Done."
+
+
+def turn(text, notify):
+    """Transcript -> spoken reply. Failures are spoken briefly and logged."""
+    if not text:
+        return "I didn't catch that."
+    log("thinking")
+    try:
+        return ask(text, notify)
+    except Failed as e:
+        log(f"error: {e}")
+        return f"Sorry: {e}."
 
 
 def main(argv):
@@ -207,18 +292,23 @@ def main(argv):
         if argv[:1] == ["--file"] and len(argv) == 2:
             print(hear(file_chunks(argv[1])))
             return 0
+        if argv[:1] == ["--ask"] and len(argv) == 2:
+            print(turn(argv[1], print))
+            return 0
     except Failed as e:
         log(f"error: {e}")
         return 1
 
-    log("idle: press Enter to talk, Ctrl-D to quit")
+    log(f"idle: press Enter to talk to the Claude session in tmux pane {PANE}, Ctrl-D to quit")
     while sys.stdin.readline():
         try:
             log("listening")
             text = hear(mic_chunks())
-            print(text or "(nothing heard)", flush=True)
+            print(f"> {text or '(nothing heard)'}", flush=True)
+            reply = turn(text, speak)
+            print(reply, flush=True)
             log("speaking")
-            speak(reply_for(text))
+            speak(reply)
         except Exception as e:  # never act on a half-finished turn
             log(f"error: {type(e).__name__}: {e}")
         log("idle")
