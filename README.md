@@ -30,7 +30,10 @@ agent/system.md       machine-maintainer instruction
 mcp-bridge.txt        MCP/browser bridge implementation prompt
 packages/pacman.txt   packages required by the machine
 packages/aur.txt      AUR packages required by the machine
-config/               files linked into ~/.config (default terminal)
+config/               files linked into ~/.config (default terminal, UI font,
+                      Omarchy theme -> tinty/WezTerm template and hook,
+                      hypr/main-terminal.lua: fullscreen WezTerm behind a
+                      SUPER+TAB desktop overlay, black desktop background)
 decisions/            reasons that are not obvious from configuration
 scripts/bootstrap.sh  reconstruct the machine (packages, monospace font, agents)
 scripts/agents.sh     link agent/system.md into each agent's global instructions

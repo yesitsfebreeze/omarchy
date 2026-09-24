@@ -17,6 +17,10 @@ if ((${#aur_packages[@]})); then
 fi
 
 [[ "$(omarchy font current)" == "$font" ]] || omarchy font set "$font"
+# The same font as the GTK UI font; fontconfig sans/serif comes from config/fontconfig.
+for key in font-name document-font-name monospace-font-name; do
+  gsettings set org.gnome.desktop.interface "$key" "$font 11"
+done
 
 # Dotfiles: github.com/yesitsfebreeze/.files is the chezmoi source for nushell,
 # tmux, nvim, wezterm, television and git. On the first apply, Omarchy's stock
@@ -37,13 +41,22 @@ bash "$dotfiles/install.sh"
 [[ "$(getent passwd "$USER" | cut -d: -f7)" == /usr/bin/nu ]] || sudo usermod -s /usr/bin/nu "$USER"
 
 # Config files owned by this repository, linked into ~/.config.
-for path in xdg-terminals.list; do
+for path in xdg-terminals.list fontconfig/conf.d/60-system-font.conf omarchy/themed/tinty-scheme.yaml.tpl omarchy/hooks/theme-set.d/tinty omarchy/hooks/theme-set.d/black-background hypr/main-terminal.lua; do
   target="$HOME/.config/$path"
   if [[ -e "$target" && ! -L "$target" ]]; then
     mv "$target" "$target.bak.$(date +%s)"
   fi
+  mkdir -p "$(dirname "$target")"
   ln -sfn "$repo_dir/config/$path" "$target"
 done
+# Hyprland loads the main-terminal module after the user overrides.
+grep -qF 'require("hypr.main-terminal")' "$HOME/.config/hypr/hyprland.lua" ||
+  printf '\nrequire("hypr.main-terminal")\n' >>"$HOME/.config/hypr/hyprland.lua"
+
+# Theme: installed after the links above, so the tinty template and hook see it.
+[[ -d "$HOME/.config/omarchy/themes/vesper" ]] || omarchy theme install https://github.com/thmoee/omarchy-vesper-theme.git
+[[ "$(omarchy theme current)" == Vesper ]] || omarchy theme set vesper
+bash "$repo_dir/config/omarchy/hooks/theme-set.d/black-background"
 
 bash "$repo_dir/scripts/agents.sh"
 bash "$repo_dir/scripts/kern.sh"

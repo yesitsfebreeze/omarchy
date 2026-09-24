@@ -1,2 +1,29 @@
 # One package per line. Add packages only when this machine actually needs them.
 wezterm
+
+# Shell and CLI stack used by github.com/yesitsfebreeze/.files
+nushell
+starship
+zoxide
+television
+tmux
+neovim
+chezmoi
+just
+bat
+eza
+fd
+ripgrep
+fzf
+jq
+git-delta
+lazygit
+wl-clipboard
+pass
+gnupg
+docker
+
+# Formatters conform.nvim calls by binary name
+stylua
+prettier
+python-black

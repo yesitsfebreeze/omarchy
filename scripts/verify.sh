@@ -18,9 +18,20 @@ for f in "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md" "$HOME/.config/openc
   [[ "$(readlink "$f")" == "$instruction" ]] || { echo "not linked: $f" >&2; exit 1; }
 done
 
-for path in wezterm xdg-terminals.list; do
+[[ "$(getent passwd "$USER" | cut -d: -f7)" == /usr/bin/nu ]] || { echo "login shell is not nu" >&2; exit 1; }
+[[ "$(chezmoi source-path)" == "$HOME/dev/.files/home" ]] || { echo "chezmoi source drift" >&2; exit 1; }
+
+[[ "$(gsettings get org.gnome.desktop.interface font-name)" == "'DepartureMono Nerd Font 11'" ]] || { echo "GTK font drift" >&2; exit 1; }
+fc-match sans-serif | grep -q DepartureMono || { echo "sans-serif font drift" >&2; exit 1; }
+
+for path in xdg-terminals.list fontconfig/conf.d/60-system-font.conf omarchy/themed/tinty-scheme.yaml.tpl omarchy/hooks/theme-set.d/tinty omarchy/hooks/theme-set.d/black-background hypr/main-terminal.lua; do
   [[ "$(readlink "$HOME/.config/$path")" == "$repo_dir/config/$path" ]] || { echo "not linked: ~/.config/$path" >&2; exit 1; }
 done
 [[ "$(xdg-terminal-exec --print-id)" == org.wezfurlong.wezterm.desktop* ]] || { echo "default terminal drift" >&2; exit 1; }
+
+grep -qF 'require("hypr.main-terminal")' "$HOME/.config/hypr/hyprland.lua" || { echo "hyprland.lua does not load hypr.main-terminal" >&2; exit 1; }
+[[ "$(readlink -f "$HOME/.local/state/omarchy/current/background")" == "$(readlink -f "$repo_dir/config/omarchy/black.png")" ]] || { echo "background drift: not black" >&2; exit 1; }
+
+[[ "$(omarchy theme current)" == Vesper ]] || { echo "theme drift: $(omarchy theme current)" >&2; exit 1; }
 
 echo "Omarchy machine repository checks passed."

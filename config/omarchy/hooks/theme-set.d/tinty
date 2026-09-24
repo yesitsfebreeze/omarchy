@@ -1,0 +1,11 @@
+#!/bin/bash
+# Pass the Omarchy theme through tinty: register the scheme rendered from
+# config/omarchy/themed/tinty-scheme.yaml.tpl as base16-omarchy, make it the
+# current scheme, and let .files' theme.sh repaint tmux and the terminal.
+data="${XDG_DATA_HOME:-$HOME/.local/share}/tinted-theming/tinty"
+mkdir -p "$data/custom-schemes/base16"
+ln -sfn "$HOME/.local/state/omarchy/current/theme/tinty-scheme.yaml" "$data/custom-schemes/base16/omarchy.yaml"
+printf 'base16-omarchy\n' >"$data/current_scheme"
+theme_sh="$HOME/.config/tinted-theming/tinty/theme.sh"
+[[ -x $theme_sh ]] && "$theme_sh"
+exit 0
