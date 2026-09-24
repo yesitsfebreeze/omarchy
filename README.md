@@ -18,10 +18,15 @@ The canonical machine-maintainer instruction is [`agent/system.md`](agent/system
 
 Any agent making a persistent system change should update this repository in the same task.
 
+## Current work
+
+[`mcp-bridge.txt`](mcp-bridge.txt) is the implementation prompt for the local ChatGPT Voice -> browser bridge -> KERN/MCP control path.
+
 ## Layout
 
 ```text
 agent/system.md       machine-maintainer instruction
+mcp-bridge.txt        MCP/browser bridge implementation prompt
 packages/pacman.txt   packages required by the machine
 decisions/            reasons that are not obvious from configuration
 scripts/bootstrap.sh  reconstruct the machine
