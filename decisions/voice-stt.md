@@ -1,15 +1,14 @@
-# Voice: Vosk for speech-to-text, not whisper.cpp
+# Voice: speech runs on Groq, not locally
 
-This machine's Celeron N5105 has no AVX/AVX2/FMA (SSE4.2 only). whisper.cpp's
-ggml `base` model took over five minutes on 2.5 s of audio. Vosk (Kaldi)
-needs no AVX and streams; the small English model transcribes in real time
-here and gives utterance endpointing for free.
+This machine's Celeron N5105 has no AVX/AVX2/FMA (SSE4.2 only). Measured:
+whisper.cpp `base` took over five minutes on 2.5 s of audio; Voxtype's
+prebuilt binaries need AVX2 (only its slow CPU Whisper runs); Piper took
+~17 s per sentence; Vosk was usable but inaccurate. Local speech was removed.
 
-Piper is `piper-tts-bin` (prebuilt): the AUR `piper-tts` builds onnxruntime
-from source, which this CPU cannot do in reasonable time.
+Both directions use Groq's free tier with one key from the keyring
+(`service groq key api`): Whisper `whisper-large-v3-turbo` (2,000 requests/day)
+and Orpheus `canopylabs/orpheus-v1-english` (100 requests/day, 200 characters
+per request, so replies are split by sentence).
 
-Recognition itself goes to Groq's free Whisper tier (`whisper-large-v3-turbo`,
-2,000 requests/day) when a key is in the keyring (`service groq key api`):
-far more accurate than the small Vosk model, and under a second. Vosk stays
-local for endpointing and is the fallback on any Groq failure, so the loop
-works offline. Only the recorded utterance leaves the machine.
+Only capture and a loudness-based end-of-utterance check run locally. Nothing
+leaves the machine until the trigger fires; then only that utterance does.

@@ -60,6 +60,5 @@ bash "$repo_dir/config/omarchy/hooks/theme-set.d/black-background"
 
 bash "$repo_dir/scripts/agents.sh"
 bash "$repo_dir/scripts/kern.sh"
-bash "$repo_dir/voice/scripts/install.sh"
 
 echo "Omarchy machine state applied."

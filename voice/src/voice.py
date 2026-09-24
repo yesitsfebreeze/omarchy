@@ -1,43 +1,52 @@
 #!/usr/bin/env python3
-"""omarchy-voice, phase 1: trigger -> record one utterance -> STT ->
-print -> Piper TTS reply -> idle.
+"""omarchy-voice, phase 1: trigger -> record one utterance -> STT -> print ->
+TTS reply -> idle.
 
   voice.py            press Enter to talk (temporary wake trigger)
   voice.py --file X   transcribe a 16 kHz mono WAV instead of the mic
   voice.py --say T    speak T and exit
 
-Vosk runs locally and decides when the utterance ends. The clip is then sent
-to Groq's Whisper when a key is available (GROQ_API_KEY, or the keyring:
-`secret-tool store --label='Groq API key' service groq key api`); without a
-key, or on any Groq failure, Vosk's transcript is used.
+Recognition and speech run remotely on Groq (Whisper, Orpheus); this CPU is
+too slow for local models (decisions/voice-stt.md). Locally there is only
+capture and a loudness check that ends the utterance. The key comes from
+GROQ_API_KEY or the keyring:
+  secret-tool store --label='Groq API key' service groq key api
 
 No agent is called yet. Any failure is logged and the loop returns to idle.
 """
 
+import array
 import io
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 import wave
-from pathlib import Path
 
-import vosk
-
-HOME = Path(os.environ.get("OMARCHY_VOICE_HOME", Path.home() / ".local/share/omarchy-voice"))
-STT_MODEL = HOME / "models/vosk-model-small-en-us-0.15"
-TTS_VOICE = HOME / "models/en_US-lessac-medium.onnx"
 RATE = 16000
 CHUNK = RATE // 5 * 2  # 200 ms of s16 mono
-MAX_UTTERANCE_S = 10
-MAX_SILENCE_S = 5  # nothing heard at all
+MAX_UTTERANCE_S = 15
+MAX_WAIT_S = 5  # no speech at all
 END_SILENCE_S = 1.2  # pause that ends an utterance
-GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODEL = "whisper-large-v3-turbo"
-GROQ_TIMEOUT_S = 15
+MIN_SPEECH_RMS = 400  # floor for the speech threshold; noise sets it higher
+
+API = "https://api.groq.com/openai/v1/audio"
+STT_MODEL = "whisper-large-v3-turbo"
+TTS_MODEL = "canopylabs/orpheus-v1-english"
+TTS_VOICE = "troy"
+TTS_MAX_CHARS = 200  # per request, Groq's limit
+TIMEOUT_S = 20
+
+
+class Failed(Exception):
+    pass
 
 
 def log(*parts):
@@ -50,13 +59,62 @@ def groq_key():
     try:
         out = subprocess.run(["secret-tool", "lookup", "service", "groq", "key", "api"],
                              capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        out = None
+    if out and out.stdout.strip():
+        return out.stdout.strip()
+    raise Failed("no Groq API key (GROQ_API_KEY or keyring service=groq key=api)")
 
 
-def groq_transcribe(audio, key):
-    """Raw s16 mono audio -> text via Groq Whisper. Raises on any failure."""
+def groq(path, body, content_type):
+    request = urllib.request.Request(f"{API}/{path}", data=body, headers={
+        "Authorization": f"Bearer {groq_key()}",
+        "Content-Type": content_type,
+        "User-Agent": "omarchy-voice",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            return response.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read(500).decode(errors="replace")
+        raise Failed(f"groq {path}: HTTP {e.code}: {detail}")
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise Failed(f"groq {path}: {e}")
+
+
+def rms(chunk):
+    samples = array.array("h", chunk)
+    return math.sqrt(sum(s * s for s in samples) / len(samples)) if samples else 0.0
+
+
+def utterance(chunks):
+    """Raw s16 audio from the first loud chunk until END_SILENCE_S of quiet.
+
+    The first chunk sets the noise floor. Time is counted in audio, not wall
+    clock, so a file behaves like the mic. Empty when nobody spoke.
+    """
+    audio, t, noise, spoke_at, quiet_since = bytearray(), 0.0, None, None, None
+    for chunk in chunks:
+        t += len(chunk) / (2 * RATE)
+        level = rms(chunk)
+        noise = level if noise is None else min(noise, level)
+        loud = level > max(MIN_SPEECH_RMS, 3 * noise)
+        if spoke_at is None:
+            if loud:
+                spoke_at, audio = t, bytearray(audio[-CHUNK:])  # keep the onset
+            elif t > MAX_WAIT_S:
+                return b""
+        audio += chunk
+        if spoke_at is not None:
+            quiet_since = None if loud else (quiet_since or t)
+            if quiet_since and t - quiet_since > END_SILENCE_S:
+                break
+        if t > MAX_UTTERANCE_S:
+            break
+    return bytes(audio) if spoke_at is not None else b""
+
+
+def transcribe(audio):
     wav = io.BytesIO()
     with wave.open(wav, "wb") as w:
         w.setnchannels(1)
@@ -64,7 +122,7 @@ def groq_transcribe(audio, key):
         w.setframerate(RATE)
         w.writeframes(audio)
     boundary = uuid.uuid4().hex
-    fields = [("model", GROQ_MODEL), ("response_format", "json"), ("temperature", "0")]
+    fields = [("model", STT_MODEL), ("response_format", "json"), ("temperature", "0")]
     body = b"".join(
         f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
         for k, v in fields
@@ -72,58 +130,35 @@ def groq_transcribe(audio, key):
         f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="utterance.wav"\r\n'
         "Content-Type: audio/wav\r\n\r\n"
     ).encode() + wav.getvalue() + f"\r\n--{boundary}--\r\n".encode()
-    request = urllib.request.Request(GROQ_URL, data=body, headers={
-        "Authorization": f"Bearer {key}",
-        "Content-Type": f"multipart/form-data; boundary={boundary}",
-        "User-Agent": "omarchy-voice",
-    })
-    with urllib.request.urlopen(request, timeout=GROQ_TIMEOUT_S) as response:
-        return json.load(response)["text"].strip()
+    answer = groq("transcriptions", body, f"multipart/form-data; boundary={boundary}")
+    return json.loads(answer)["text"].strip()
 
 
-def recognize(model, chunks):
-    """One utterance -> (text, engine). Local Vosk ends it; Groq refines it."""
-    local, audio = transcribe(model, chunks)
-    if not local:
-        return "", "vosk"
-    key = groq_key()
-    if not key:
-        return local, "vosk"
-    try:
-        return groq_transcribe(audio, key), "groq"
-    except Exception as e:  # network, quota (429), bad key: stay local
-        log(f"groq failed ({type(e).__name__}: {e}); using vosk")
-        return local, "vosk"
+def pieces(text):
+    """Sentences packed into requests of at most TTS_MAX_CHARS."""
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        while len(sentence) > TTS_MAX_CHARS:
+            cut = sentence.rfind(" ", 0, TTS_MAX_CHARS)
+            cut = cut if cut > 0 else TTS_MAX_CHARS
+            out.append(sentence[:cut])
+            sentence = sentence[cut:].strip()
+        if out and len(out[-1]) + 1 + len(sentence) <= TTS_MAX_CHARS:
+            out[-1] += " " + sentence
+        elif sentence:
+            out.append(sentence)
+    return out
 
 
-def transcribe(model, chunks):
-    """Feed raw s16 chunks until the speaker pauses; return (text, audio).
-
-    Time is counted in audio, not wall clock, so a file reads like the mic.
-    Vosk's own endpoint fires on short pauses mid-sentence, so its segments
-    are joined and the utterance ends only after END_SILENCE_S without new
-    words.
-    """
-    rec = vosk.KaldiRecognizer(model, RATE)
-    parts, last, t, changed_at, audio = [], "", 0.0, 0.0, bytearray()
-    for chunk in chunks:
-        audio += chunk
-        t += len(chunk) / (2 * RATE)
-        if rec.AcceptWaveform(chunk):
-            text = json.loads(rec.Result()).get("text", "")
-            if text:
-                parts.append(text)
-            now = " ".join(parts)
-        else:
-            now = " ".join(parts + [json.loads(rec.PartialResult()).get("partial", "")]).strip()
-        if now != last:
-            last, changed_at = now, t
-        if t > MAX_UTTERANCE_S or (not last and t > MAX_SILENCE_S):
-            break
-        if last and t - changed_at > END_SILENCE_S:
-            break
-    parts.append(json.loads(rec.FinalResult()).get("text", ""))
-    return " ".join(p for p in parts if p).strip(), bytes(audio)
+def speak(text):
+    for piece in pieces(text):
+        body = json.dumps({"model": TTS_MODEL, "voice": TTS_VOICE, "input": piece,
+                           "response_format": "wav"}).encode()
+        wav = groq("speech", body, "application/json")
+        with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+            f.write(wav)
+            f.flush()
+            subprocess.run(["pw-play", f.name], check=True, timeout=120)
 
 
 def mic_chunks():
@@ -147,21 +182,9 @@ def file_chunks(path):
             yield chunk
 
 
-def speak(text):
-    """Piper to raw audio, straight into PipeWire."""
-    with open(str(TTS_VOICE) + ".json") as f:
-        rate = json.load(f)["audio"]["sample_rate"]
-    tts = subprocess.Popen(
-        ["piper-tts", "-m", str(TTS_VOICE), "--output-raw"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-    )
-    play = subprocess.Popen(
-        ["pw-play", "--raw", "--rate", str(rate), "--channels", "1", "--format", "s16", "-"],
-        stdin=tts.stdout,
-    )
-    tts.stdout.close()
-    tts.communicate(text.encode() + b"\n", timeout=60)
-    play.wait(timeout=60)
+def hear(chunks):
+    audio = utterance(chunks)
+    return transcribe(audio) if audio else ""
 
 
 def reply_for(text):
@@ -169,26 +192,22 @@ def reply_for(text):
 
 
 def main(argv):
-    if argv[:1] == ["--say"] and len(argv) == 2:
-        speak(argv[1])
-        return 0
-
-    vosk.SetLogLevel(-1)
-    log("loading", STT_MODEL.name)
-    model = vosk.Model(str(STT_MODEL))
-
-    if argv[:1] == ["--file"] and len(argv) == 2:
-        text, engine = recognize(model, file_chunks(argv[1]))
-        log("engine:", engine)
-        print(text)
-        return 0
+    try:
+        if argv[:1] == ["--say"] and len(argv) == 2:
+            speak(argv[1])
+            return 0
+        if argv[:1] == ["--file"] and len(argv) == 2:
+            print(hear(file_chunks(argv[1])))
+            return 0
+    except Failed as e:
+        log(f"error: {e}")
+        return 1
 
     log("idle: press Enter to talk, Ctrl-D to quit")
     while sys.stdin.readline():
         try:
             log("listening")
-            text, engine = recognize(model, mic_chunks())
-            log("engine:", engine)
+            text = hear(mic_chunks())
             print(text or "(nothing heard)", flush=True)
             log("speaking")
             speak(reply_for(text))
