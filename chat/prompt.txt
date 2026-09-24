@@ -1,0 +1,295 @@
+OMARCHY CHAT — BUILD PROMPT
+
+Mission
+
+Build a tiny local chat/message bus for this Omarchy workstation so humans, voice services, coding agents, KERN, and future tools can join the same machine conversation, post structured messages, ask questions, follow channels, and recover recent context.
+
+This repository is the source of truth for the installation. Follow ../agent/system.md: every persistent machine change required by this service must be represented in this repository in the same task.
+
+Core experience
+
+  human / voice / terminal / ChatGPT bridge
+                    |
+                    v
+              omarchy-chatd
+                    |
+          local structured message bus
+                    |
+      +-------------+-------------+
+      |             |             |
+    Claude        Codex          KERN
+      |             |             |
+      +-------------+-------------+
+                    |
+              SQLite history
+
+The service is local infrastructure. Do not make ChatGPT, Claude, Codex, or any single agent the hub.
+
+Initial design
+
+1. `omarchy-chatd`
+   - always-on user service
+   - local-only transport first
+   - prefer a Unix domain socket; a localhost WebSocket/HTTP surface may be added only if a real client requires it
+   - SQLite database in WAL mode
+   - starts at user login through systemd --user
+
+2. `omchat`
+   Small CLI for humans and agents.
+
+   Desired shape:
+
+     omchat send <channel> <message>
+     omchat send --kind question <channel> <message>
+     omchat tail <channel>
+     omchat history <channel> [--since ...]
+     omchat search <words>
+     omchat join --agent <name>
+     omchat reply <message-id> <message>
+
+   Exact syntax may change if a smaller, more coherent interface emerges.
+
+3. Structured messages
+
+   Minimum fields:
+
+     id
+     created_at
+     channel
+     sender
+     kind
+     body
+     thread_id / reply_to when applicable
+     metadata JSON when needed
+
+   Useful initial kinds:
+
+     message
+     question
+     answer
+     activity
+     result
+     decision
+     error
+
+   Keep the schema small. Do not build a social network.
+
+4. Channels
+
+   Channels are simple strings, for example:
+
+     system
+     project/kern
+     project/game
+     agent/claude
+     agent/codex
+
+   Agents should subscribe only to the channels relevant to their work plus direct mentions/questions intended for them.
+
+5. Agent behavior
+
+   Agents using this machine should be able to:
+   - read recent relevant chat before acting
+   - post important progress/results
+   - ask the human or another agent a question
+   - wait for an answer instead of inventing one
+   - search recent and archived history when needed
+
+   Raw token streams, compiler spam, and huge logs should not be dumped into chat. Summarize activity and link/reference artifacts when possible.
+
+Retention
+
+Local storage is a rolling 30-day working window.
+
+- Keep the most recent 30 days of messages in the local SQLite database.
+- Never delete messages merely because the calendar month changed; retention is age-based.
+- Before any messages are pruned locally, ensure they have been archived successfully.
+- If archival fails, keep the messages locally and report the failure. Never prune unarchived history.
+
+Monthly archive
+
+Older history must remain available to agents through a separate PRIVATE GitHub archive repository.
+
+The archive repository must NOT be this public Omarchy configuration repository.
+
+The archive repository URL/name is configuration. Do not hardcode credentials. Authentication comes from the machine's normal Git/pass/credential setup and secrets must never be written into chat or this repository.
+
+At each month transition, snapshot the previous calendar month's complete chat history into the private archive repository on a dedicated branch.
+
+Branch naming:
+
+  archive/YYYY-MM
+
+Examples:
+
+  archive/2026-09
+  archive/2026-10
+
+Each archive branch should contain a deterministic, agent-readable export of that month's messages. Prefer plain formats that Git can diff and search easily, for example:
+
+  YYYY-MM/
+    messages.jsonl
+    channels/
+      system.jsonl
+      project-kern.jsonl
+      ...
+    README.md
+
+`messages.jsonl` is the canonical full export. Channel-specific files are optional derived indexes if they materially improve search.
+
+Archive requirements
+
+- one immutable logical snapshot per calendar month
+- deterministic ordering, oldest to newest
+- stable message ids preserved
+- timestamps preserved in an explicit timezone/UTC representation
+- no secrets or credentials introduced during export
+- verify the pushed branch exists remotely before marking the month archived
+- safe to run repeatedly: repeated archive runs must not duplicate or corrupt messages
+- if late-arriving messages belong to a previously archived month, update that month's branch deterministically rather than silently losing them
+
+Do not force-push over unrelated human changes. If the archive branch has diverged unexpectedly, stop and report the conflict.
+
+Historical lookup
+
+Agents must be able to search older history without cloning every branch permanently into their prompt/context.
+
+Provide a small interface such as:
+
+  omchat archive list
+  omchat archive search <words>
+  omchat archive show <message-id>
+
+Implementation may use Git commands locally to inspect/fetch archive branches on demand.
+
+Search should return bounded results with enough metadata to locate the original message. Do not automatically inject entire months of history into an agent context.
+
+Retention/archival scheduler
+
+Use native user-level scheduling, preferably systemd user timer(s).
+
+The maintenance job should:
+
+1. detect whether the previous calendar month has been archived
+2. export/update it if needed
+3. verify the remote branch
+4. determine messages older than 30 days
+5. confirm every candidate is represented in a verified archive
+6. prune only verified archived messages
+7. compact/checkpoint SQLite only when appropriate
+8. emit a concise maintenance result to the `system` channel
+
+Run maintenance at startup and periodically (for example daily). It must be idempotent.
+
+Security and privacy
+
+- Local clients authenticate by local OS/user boundary initially; prefer owner-only Unix socket permissions.
+- No public listener in the first implementation.
+- Do not accept arbitrary remote code execution through chat.
+- Chat messages are data, never shell commands by themselves.
+- Tool execution stays behind the relevant agent/KERN permission model.
+- Never archive pass contents, API keys, tokens, cookies, private keys, or environment dumps containing secrets.
+- Treat message bodies as potentially sensitive: the archive repository MUST be private.
+
+Implementation bias
+
+Keep this small.
+
+Prefer:
+- one daemon
+- one SQLite database
+- one CLI
+- one user service
+- one user timer
+- standard library/native OS facilities where practical
+
+Avoid:
+- IRC server unless it genuinely reduces code after the structured/replay/archive requirements are considered
+- Redis/Postgres/NATS for the first local version
+- web UI before the CLI and bus work
+- Kubernetes/containers
+- a plugin framework before there is a second real implementation
+
+Suggested phases
+
+Phase 0 — inspect
+- inspect actual Omarchy/Linux environment
+- inspect available languages/runtime already installed
+- inspect systemd user setup
+- inspect current Git/gh/pass configuration without exposing secret values
+- choose the smallest implementation stack
+- write down only decisions that matter
+
+Phase 1 — local bus
+- implement `omarchy-chatd`
+- Unix socket
+- SQLite WAL
+- send/history/tail
+- typed messages
+- basic channels
+- smoke tests
+
+Acceptance:
+- two terminal clients can exchange messages through the daemon
+- restarting daemon preserves history
+- socket is owner-only
+
+Phase 2 — agent interface
+- add agent identity
+- question/reply/thread support
+- bounded search
+- document how Claude/Codex/KERN can connect
+
+Acceptance:
+- one real agent can post a question and another client can answer it
+
+Phase 3 — retention
+- implement rolling 30-day retention logic
+- do NOT delete anything yet until archive is implemented
+- tests around date boundaries and idempotency
+
+Phase 4 — monthly private Git archive
+- configure archive repo reference
+- export previous calendar month deterministically
+- create/update `archive/YYYY-MM`
+- push and verify remote branch
+- historical list/search/show commands
+- only after verification enable pruning of >30-day local data
+
+Acceptance:
+- a fixture month is archived to a test/private repository branch
+- rerunning produces the same logical archive
+- local messages are pruned only after verified archive
+- an older message can be found again through `omchat archive search`
+
+Phase 5 — boot integration
+- systemd --user service for chat daemon
+- systemd --user timer for maintenance/archive
+- add installation/rebuild instructions to this Omarchy repository
+- verify reboot/login behavior
+
+Phase 6 — voice and agents
+- connect ../voice service to the chat bus
+- voice subscribes to questions/mentions that need the human
+- voice posts spoken human answers back as messages
+- connect agent launchers so they join/read/post automatically
+
+Do not start with Phase 6.
+
+Tests that matter
+
+- concurrent sends do not lose messages
+- daemon crash/restart preserves committed messages
+- malformed messages are rejected cleanly
+- 30-day boundary is correct
+- month boundary is correct
+- archive export is deterministic
+- archive failure prevents pruning
+- remote archive verification is required before prune
+- duplicate maintenance runs are harmless
+- archive search returns bounded results
+- socket permissions prevent other local users from casually joining
+
+Completion condition
+
+A clean Omarchy installation can clone this repository, install/start the chat service, and provide a persistent local message bus where humans and agents communicate. The most recent 30 days stay locally searchable. Each completed calendar month is preserved on a private GitHub archive branch named `archive/YYYY-MM`, and agents can search those older branches on demand without loading the entire archive into context.
