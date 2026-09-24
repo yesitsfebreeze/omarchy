@@ -33,8 +33,8 @@ scripts/verify.sh     verify the repository/setup
 ```bash
 git clone https://github.com/yesitsfebreeze/omarchy.git ~/.local/share/omarchy
 cd ~/.local/share/omarchy
-./scripts/bootstrap.sh
-./scripts/verify.sh
+bash scripts/bootstrap.sh
+bash scripts/verify.sh
 ```
 
 Then configure each LLM/agent you use to always load `~/.local/share/omarchy/agent/system.md` as its machine-level instruction.
