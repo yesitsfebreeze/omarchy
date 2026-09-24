@@ -30,6 +30,7 @@ mcp-bridge.txt        MCP/browser bridge implementation prompt
 packages/pacman.txt   packages required by the machine
 decisions/            reasons that are not obvious from configuration
 scripts/bootstrap.sh  reconstruct the machine
+scripts/agents.sh     link agent/system.md into each agent's global instructions
 scripts/verify.sh     verify the repository/setup
 ```
 
@@ -42,6 +43,6 @@ bash scripts/bootstrap.sh
 bash scripts/verify.sh
 ```
 
-Then configure each LLM/agent you use to always load `~/.local/share/omarchy/agent/system.md` as its machine-level instruction.
+`bootstrap.sh` runs `scripts/agents.sh`, which wires `agent/system.md` into Claude Code, Codex, Gemini CLI and OpenCode. Other agents need an entry there once their global-instruction mechanism is known.
 
 The goal is simple: a clean Omarchy installation plus this repository should be enough to reconstruct the workstation.

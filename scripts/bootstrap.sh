@@ -10,5 +10,6 @@ if ((${#packages[@]})); then
   sudo pacman -S --needed --noconfirm "${packages[@]}"
 fi
 
+bash "$repo_dir/scripts/agents.sh"
+
 echo "Omarchy machine state applied."
-echo "Load $repo_dir/agent/system.md as the global machine instruction for each agent."
