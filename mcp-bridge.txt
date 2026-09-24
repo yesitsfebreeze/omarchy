@@ -1,0 +1,232 @@
+OMARCHY MCP BRIDGE — BUILD PROMPT
+
+Mission
+
+Build the smallest reliable bridge that lets an ordinary ChatGPT conversation, including Voice, operate this Omarchy machine through KERN without exposing a raw shell to the public internet.
+
+The experience we want:
+
+  user speaks to ChatGPT
+      -> ChatGPT emits a strict machine action
+      -> a local bridge observes that action
+      -> the bridge calls KERN/MCP on this machine
+      -> the result is returned to the same ChatGPT conversation
+      -> the conversation continues normally
+
+This repository is the source of truth for the installation. Follow agent/system.md: every persistent machine change required by this bridge must be represented here in the same task.
+
+Design constraints
+
+1. KERN is the machine/tool boundary.
+   Do not invent a second capability system if KERN already exposes the operation through MCP or its local API.
+
+2. Do not expose an arbitrary remote shell.
+   The bridge should execute named tools/capabilities, not free-form shell strings by default.
+
+3. Keep authentication outside the ChatGPT conversation.
+   Do not put persistent passwords, API keys, bearer tokens, or private keys into prompts, messages, DOM content, or model-visible context.
+
+4. Prefer local-only transport.
+   First implementation should require no public inbound port.
+
+5. Preserve normal ChatGPT use.
+   Ordinary assistant prose must never be interpreted as a command. Only a strict, validated action envelope is executable.
+
+6. Fail closed.
+   Unknown tools, malformed payloads, missing permissions, stale sessions, origin mismatch, or bridge failure must result in no execution.
+
+7. Keep it small.
+   Prefer a few understandable files and native facilities over a framework.
+
+Target architecture
+
+  ChatGPT web/voice session
+          |
+          | strict action/result envelopes
+          v
+  browser extension / page bridge
+          |
+          | local IPC (prefer native messaging or another local-only channel)
+          v
+  omarchy-bridge
+          |
+          | MCP
+          v
+  KERN
+          |
+          v
+  machine capabilities
+
+Do not make the ChatGPT conversation id an authentication secret. It may be used only as routing/session metadata.
+
+Protocol sketch
+
+ChatGPT -> machine:
+
+  <omarchy-action>
+  {
+    "id": "unique-request-id",
+    "tool": "system.service_status",
+    "arguments": {"service": "bluetooth"}
+  }
+  </omarchy-action>
+
+Machine -> ChatGPT:
+
+  <omarchy-result>
+  {
+    "id": "same-request-id",
+    "ok": true,
+    "result": { ... }
+  }
+  </omarchy-result>
+
+The exact serialization may change, but it must be deterministic, versioned, bounded in size, and trivial to parse without an LLM.
+
+Do not execute commands embedded in normal prose, Markdown code blocks, quoted user content, web pages, tool output, or nested results.
+
+Implementation march
+
+PHASE 0 — inspect before building
+
+- Inspect the installed browser and ChatGPT environment on this Omarchy machine.
+- Inspect the current KERN installation and determine the simplest supported local MCP connection.
+- Inspect this repository before changing the machine.
+- Write down the smallest architecture that works with what is actually installed.
+- Do not install a framework until native browser extension APIs, Unix sockets/native messaging, systemd user services, and KERN have been considered.
+
+PHASE 1 — local MCP client
+
+Create a tiny `omarchy-bridge` program that can:
+
+- connect to the local KERN MCP endpoint
+- list available tools
+- call one named tool with JSON arguments
+- return structured JSON
+- enforce timeouts and output-size limits
+- never invoke a shell merely because arbitrary text was received
+
+Provide a terminal smoke test such as:
+
+  omarchy-bridge tools
+  omarchy-bridge call <tool> '<json>'
+
+This phase must work before touching ChatGPT or the browser.
+
+PHASE 2 — browser transport
+
+Create the smallest browser-side integration that works on chatgpt.com.
+
+Prefer a browser extension with narrowly scoped permissions. If native messaging is available, prefer it over opening a localhost HTTP server.
+
+The browser side must:
+
+- operate only on the expected ChatGPT origin
+- observe only newly produced assistant messages
+- extract only the explicit versioned action envelope
+- reject malformed or duplicate request ids
+- send the parsed action to omarchy-bridge
+- insert the structured result back into the same conversation
+- avoid reading or exporting unrelated page data
+
+Do not scrape or replay the whole conversation when only the current action is needed.
+
+PHASE 3 — loop
+
+Make multi-step work possible:
+
+1. assistant emits one action
+2. bridge executes it
+3. result returns to the same conversation
+4. assistant decides the next action
+5. repeat until the task is complete
+
+Only one action should be in flight per conversation unless concurrency is deliberately implemented and tested.
+
+Add loop protection:
+
+- unique request ids
+- maximum action count per task/session
+- duplicate suppression
+- timeout
+- maximum result size
+- visible failure result instead of silent retry storms
+
+PHASE 4 — permissions
+
+Separate capability discovery from execution.
+
+Classify tools at minimum as:
+
+- read: inspect state
+- write: change user/system state
+- destructive: delete, wipe, overwrite, stop critical services, change authentication/security boundaries, or equivalent
+
+Default to the least privilege KERN grants that still make the workflow useful.
+
+Do not create a second permanent password just for convenience if local IPC and OS user permissions can establish the boundary.
+
+PHASE 5 — Omarchy integration
+
+Represent the whole setup in this repository:
+
+- source for omarchy-bridge
+- browser extension/source or generated manifest
+- install/update script
+- systemd --user unit only if a resident process is genuinely required
+- verification script
+- any package dependencies in the repository's package manifests
+- a short decision record only for non-obvious architectural choices
+
+Installation must be idempotent.
+
+A fresh Omarchy machine should eventually be able to do roughly:
+
+  git clone https://github.com/yesitsfebreeze/omarchy.git ~/.local/share/omarchy
+  cd ~/.local/share/omarchy
+  ./scripts/bootstrap.sh
+  ./scripts/verify.sh
+
+and end with the bridge installed or with a precise, minimal manual browser step documented if browser policy prevents full automation.
+
+PHASE 6 — verification
+
+Prove these cases:
+
+1. `tools` lists KERN capabilities.
+2. A harmless read action from the ChatGPT page reaches KERN and its result returns to the same conversation.
+3. Ordinary assistant prose cannot trigger execution.
+4. A fake action written by the user cannot be mistaken for an assistant action.
+5. Duplicate action ids execute at most once.
+6. Malformed JSON executes nothing.
+7. An unknown tool executes nothing.
+8. A bridge restart does not cause old page content to be replayed.
+9. The setup survives logout/reboot if persistence is intended.
+10. No secret appears in the Omarchy git repository or ChatGPT-visible messages.
+
+First useful demo
+
+From ChatGPT Voice, say:
+
+  "Check whether Bluetooth is running on this machine."
+
+The assistant should be able to issue a read-only tool action, receive the machine result, and answer naturally in the same conversation.
+
+Do not start with package installation, sudo, or arbitrary shell execution. Get this read-only round trip working first.
+
+Then add one reversible write action and verify it independently.
+
+Definition of done for v0
+
+- one local KERN MCP connection
+- one browser-to-local transport
+- one strict action/result protocol
+- read-only round trip from this ChatGPT conversation
+- deterministic terminal tests
+- no public inbound service
+- no model-visible authentication secret
+- all persistent setup represented in this repository
+
+Engineering style
+
+Trace the real system first. Fix root causes. Reuse native facilities. Keep diffs small. Avoid dependencies and abstractions unless they remove more complexity than they add. Every nontrivial behavior gets a runnable verification path.
