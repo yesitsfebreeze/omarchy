@@ -1,3 +1,5 @@
 # AUR packages, one per line. Installed with `omarchy pkg aur add`.
 # Nerd-patched Departure Mono (keeps Omarchy's bar/terminal icons working); see scripts/bootstrap.sh for the font setting.
 otf-departure-mono-nerd
+# Prebuilt Piper TTS for voice/ (see decisions/voice-stt.md).
+piper-tts-bin
