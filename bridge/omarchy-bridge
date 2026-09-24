@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""omarchy-bridge: run allowlisted KERN tools for the ChatGPT page.
+
+  omarchy-bridge tools                 allowlisted tools and KERN's MCP tools
+  omarchy-bridge call <tool> '<json>'  run one allowlisted tool
+  omarchy-bridge action '<text>'       handle one assistant message, print the reply
+  omarchy-bridge native                Chromium native messaging host (one message)
+
+Only a message that is exactly one <omarchy-action> envelope naming an
+allowlisted tool with valid arguments reaches KERN. Everything else fails
+closed. Nothing here runs a shell.
+"""
+
+import json
+import os
+import re
+import select
+import shutil
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+VERSION = 1
+MAX_ACTION_BYTES = 4096
+MAX_RESULT_BYTES = 16384
+TIMEOUT_S = 15
+SEEN_KEEP = 1000
+
+REPO = Path(__file__).resolve().parent.parent
+WORKSPACE = REPO / "kern"
+STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "omarchy-bridge"
+
+# name -> class, description, argument validation, KERN MCP call.
+# Classes: read (inspect), write (change state), destructive. Only read today.
+SERVICES = ["bluetooth", "NetworkManager"]
+TOOLS = {
+    "system.service_status": {
+        "class": "read",
+        "description": "Whether a system service is running (systemd ActiveState).",
+        "arguments": {"service": SERVICES},
+        "kern": lambda a: ("kern_asp", {"op": "act", "entity": f"unit:{a['service']}.service", "action": "status"}),
+    },
+}
+
+ENVELOPE = re.compile(r"\A<omarchy-action>\s*(\{.*\})\s*</omarchy-action>\Z", re.S)
+REQUEST_ID = re.compile(r"\A[A-Za-z0-9._-]{1,64}\Z")
+
+
+class Refused(Exception):
+    pass
+
+
+def kern_binary():
+    found = shutil.which("kern") or str(Path.home() / ".cargo/bin/kern")
+    if not os.access(found, os.X_OK):
+        raise Refused("kern is not installed")
+    return found
+
+
+def mcp(requests):
+    """Send MCP requests to `kern mcp` over stdio; return responses by id."""
+    env = dict(os.environ, CARTRIDGE_YOLO="1")
+    proc = subprocess.Popen(
+        [kern_binary(), "mcp"], cwd=WORKSPACE, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    messages = [
+        {"jsonrpc": "2.0", "id": 0, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": {"name": "omarchy-bridge", "version": str(VERSION)}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    ] + [dict(r, jsonrpc="2.0", id=i + 1) for i, r in enumerate(requests)]
+    try:
+        proc.stdin.write("".join(json.dumps(m) + "\n" for m in messages).encode())
+        proc.stdin.flush()
+        want = set(range(len(requests) + 1))
+        answers, buf, deadline = {}, b"", time.monotonic() + TIMEOUT_S
+        while want:
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([proc.stdout], [], [], left)[0]:
+                raise Refused("kern timed out")
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                raise Refused("kern exited")
+            buf += chunk
+            if len(buf) > 4 * MAX_RESULT_BYTES + 65536:
+                raise Refused("kern answer too large")
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                if line.strip():
+                    msg = json.loads(line)
+                    if msg.get("id") in want:
+                        want.discard(msg["id"])
+                        answers[msg["id"]] = msg
+        return [answers[i + 1] for i in range(len(requests))]
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def validate(tool, arguments):
+    spec = TOOLS.get(tool)
+    if spec is None:
+        raise Refused(f"unknown tool: {tool}")
+    if spec["class"] != "read":
+        raise Refused(f"{tool} is {spec['class']}; not permitted")
+    if not isinstance(arguments, dict) or set(arguments) != set(spec["arguments"]):
+        raise Refused(f"{tool} takes exactly: {sorted(spec['arguments'])}")
+    for name, allowed in spec["arguments"].items():
+        if arguments[name] not in allowed:
+            raise Refused(f"{name} must be one of {allowed}")
+    return spec
+
+
+def call(tool, arguments):
+    spec = validate(tool, arguments)
+    name, params = spec["kern"](arguments)
+    (answer,) = mcp([{"method": "tools/call", "params": {"name": name, "arguments": params}}])
+    if "error" in answer:
+        raise Refused(f"kern: {answer['error'].get('message', 'error')}")
+    result = answer["result"]
+    text = "\n".join(c.get("text", "") for c in result.get("content", [])).strip()
+    if result.get("isError"):
+        raise Refused(f"kern: {text[:500]}")
+    if len(text.encode()) > MAX_RESULT_BYTES:
+        raise Refused("result too large")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def parse(text):
+    """The one executable form: the whole message is one versioned envelope."""
+    if len(text.encode()) > MAX_ACTION_BYTES:
+        raise Refused("action too large")
+    match = ENVELOPE.match(text.strip())
+    if not match:
+        raise Refused("not an action envelope")
+    try:
+        action = json.loads(match.group(1))
+    except ValueError:
+        raise Refused("malformed JSON")
+    if not isinstance(action, dict) or set(action) != {"v", "id", "tool", "arguments"}:
+        raise Refused("envelope needs exactly v, id, tool, arguments")
+    if action["v"] != VERSION:
+        raise Refused(f"unsupported version: {action['v']}")
+    if not isinstance(action["id"], str) or not REQUEST_ID.match(action["id"]):
+        raise Refused("bad id")
+    return action
+
+
+def claim(request_id):
+    """Record the id; False if it was already seen. Survives bridge restarts."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    seen_file = STATE / "seen"
+    seen = seen_file.read_text().split() if seen_file.exists() else []
+    if request_id in seen:
+        return False
+    seen = (seen + [request_id])[-SEEN_KEEP:]
+    tmp = seen_file.with_suffix(".tmp")
+    tmp.write_text("\n".join(seen) + "\n")
+    tmp.replace(seen_file)
+    return True
+
+
+def envelope(reply):
+    body = json.dumps(reply, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"<omarchy-result>\n{body}\n</omarchy-result>"
+
+
+def handle(text):
+    """Reply for one assistant message: {post: envelope} or {ignore: reason}."""
+    if "<omarchy-action>" not in text:
+        return {"ignore": "prose"}
+    try:
+        action = parse(text)
+    except Refused as e:
+        return {"post": envelope({"v": VERSION, "id": None, "ok": False, "error": str(e)})}
+    if not claim(action["id"]):
+        return {"ignore": "duplicate id"}
+    reply = {"v": VERSION, "id": action["id"]}
+    try:
+        reply.update(ok=True, result=call(action["tool"], action["arguments"]))
+    except Refused as e:
+        reply.update(ok=False, error=str(e))
+    except Exception as e:  # anything unexpected is a visible failure, never a retry
+        reply.update(ok=False, error=f"bridge failure: {type(e).__name__}")
+    return {"post": envelope(reply)}
+
+
+def native():
+    raw = sys.stdin.buffer.read(4)
+    if len(raw) != 4:
+        return
+    (length,) = struct.unpack("<I", raw)
+    if length > MAX_ACTION_BYTES * 2:
+        reply = {"ignore": "message too large"}
+    else:
+        try:
+            message = json.loads(sys.stdin.buffer.read(length))
+            reply = handle(message["text"]) if isinstance(message.get("text"), str) else {"ignore": "no text"}
+        except ValueError:
+            reply = {"ignore": "unreadable message"}
+    out = json.dumps(reply).encode()
+    sys.stdout.buffer.write(struct.pack("<I", len(out)) + out)
+    sys.stdout.buffer.flush()
+
+
+def main(argv):
+    try:
+        if argv[:1] == ["tools"]:
+            (listed,) = mcp([{"method": "tools/list"}])
+            print(json.dumps({
+                "bridge": {n: {"class": s["class"], "description": s["description"], "arguments": s["arguments"]}
+                           for n, s in TOOLS.items()},
+                "kern": [t["name"] for t in listed["result"]["tools"]],
+            }, indent=2))
+        elif argv[:1] == ["call"] and len(argv) == 3:
+            print(json.dumps(call(argv[1], json.loads(argv[2])), indent=2))
+        elif argv[:1] == ["action"] and len(argv) == 2:
+            print(json.dumps(handle(argv[1]), indent=2))
+        elif argv == ["native"] or (argv and argv[0].startswith("chrome-extension://")):
+            native()
+        else:
+            print(__doc__.strip(), file=sys.stderr)
+            return 2
+    except Refused as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

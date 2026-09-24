@@ -20,7 +20,8 @@ Any agent making a persistent system change should update this repository in the
 
 ## Current work
 
-[`mcp-bridge.txt`](mcp-bridge.txt) is the implementation prompt for the local ChatGPT Voice -> browser bridge -> KERN/MCP control path.
+- [`voice/prompt.txt`](voice/prompt.txt): local voice agent (wake word -> STT -> agent -> TTS).
+- [`mcp-bridge.txt`](mcp-bridge.txt): ChatGPT -> browser -> KERN/MCP bridge. `bridge/omarchy-bridge` and the `kern/` workspace exist; the Chromium extension does not yet.
 
 ## Layout
 
@@ -29,12 +30,20 @@ agent/system.md       machine-maintainer instruction
 mcp-bridge.txt        MCP/browser bridge implementation prompt
 packages/pacman.txt   packages required by the machine
 packages/aur.txt      AUR packages required by the machine
-config/               files linked into ~/.config (wezterm, default terminal)
+config/               files linked into ~/.config (default terminal)
 decisions/            reasons that are not obvious from configuration
 scripts/bootstrap.sh  reconstruct the machine (packages, monospace font, agents)
 scripts/agents.sh     link agent/system.md into each agent's global instructions
+scripts/kern.sh       install Rust (Omarchy dev-env) and build KERN from ~/dev/kern
+kern/                 KERN workspace for the bridge (svc: read-only unit state)
+bridge/omarchy-bridge allowlisted KERN tools over MCP (CLI + native messaging host)
+voice/                local voice agent
 scripts/verify.sh     verify the repository/setup
 ```
+
+## Shell and dotfiles
+
+`nu` is the login shell and the shell of every terminal. Its config, and the tmux, nvim, wezterm, television and git configs, come from [`yesitsfebreeze/.files`](https://github.com/yesitsfebreeze/.files), applied with chezmoi from `~/dev/.files`. This repository owns the packages and the login shell; `.files` owns the configs.
 
 ## Fresh Omarchy install
 
