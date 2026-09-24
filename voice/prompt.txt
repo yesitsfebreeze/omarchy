@@ -1,0 +1,229 @@
+OMARCHY VOICE — BUILD PROMPT
+
+Mission
+
+Build a small always-on local voice agent for this Omarchy workstation.
+
+The user experience should feel like Alexa, but the assistant controls local coding agents and machine tools instead of a fixed smart-home skill set.
+
+The first useful loop is:
+
+  wake phrase
+      -> record one utterance
+      -> speech to text
+      -> send text to an agent/router
+      -> let the agent work
+      -> extract the conversational reply
+      -> speak that reply aloud
+      -> return to wake-word listening
+
+This repository is the source of truth for the installation. Follow ../agent/system.md: every persistent machine change required by this voice service must be represented in this repository in the same task.
+
+Design constraints
+
+1. Local first.
+   Wake-word detection, microphone capture, and the service lifecycle should work locally and without a cloud dependency.
+
+2. Reuse mature components.
+   Prefer small established tools for each layer instead of building speech systems from scratch.
+
+   Initial candidates:
+   - wake word: openWakeWord or equivalent
+   - speech to text: whisper.cpp or equivalent
+   - text to speech: Piper or equivalent
+
+   Verify what works best on this actual machine before committing to a dependency.
+
+3. Agents are interchangeable backends.
+   The voice daemon must not become coupled to one provider or model.
+
+   It should be able to route to things such as:
+   - Claude Code
+   - Codex
+   - KERN
+   - a local model/agent
+   - future agents
+
+4. Keep agent work and speech separate.
+   Raw shell output, compiler logs, token streams, diffs, and tool traces should not be spoken automatically.
+
+   The system should distinguish:
+   - work/activity output: visible/logged but silent
+   - conversational output: suitable for TTS
+
+5. Preserve sessions.
+   Do not start a fresh agent for every sentence if an existing session can be continued.
+
+   The router should eventually support intents such as:
+   - continue working on KERN
+   - ask Codex to fix the test
+   - what did Claude just change
+   - stop that agent
+   - switch to another project
+
+6. Start simple.
+   No GUI is required for the first version.
+   No browser integration is required.
+   MCP is optional, not architectural.
+   Do not add a framework unless the simple implementation proves insufficient.
+
+7. Run at login/boot as a user service.
+   The finished first version should be managed by systemd --user or the native Omarchy equivalent, restart safely, and remain idle with low CPU use while waiting for the wake phrase.
+
+8. Fail safely.
+   If STT, TTS, wake detection, or an agent backend fails, do not execute guessed commands. Log the error and return to a known idle state.
+
+9. Secrets stay out of this repository.
+   Existing agent logins and credentials may be used by their native clients, but never copied into this repo or prompt.
+
+Suggested shape
+
+  voice/
+    prompt.txt
+    src/
+      wake.*
+      listen.*
+      agent.*
+      speak.*
+      main.*
+    service/
+      omarchy-voice.service
+    scripts/
+      install.*
+      verify.*
+
+Do not create all of this blindly. First inspect the machine and choose the smallest implementation that fits.
+
+Phase 0 — inspect
+
+Before coding:
+
+1. Read ../agent/system.md and this file completely.
+2. Inspect the actual audio stack, microphone devices, user session, init/service environment, installed runtimes, and available agents.
+3. Determine whether KERN is installed and how current local agents are launched/resumed.
+4. Check which candidate wake/STT/TTS components are practical on this hardware.
+5. Record only durable decisions back into the repository.
+
+Phase 1 — prove the audio loop
+
+Implement the smallest possible local prototype that can:
+
+1. listen for a temporary wake phrase or key-triggered substitute
+2. capture one utterance
+3. transcribe it
+4. print the transcription
+5. synthesize a fixed spoken response
+6. return to idle
+
+Do not add agent execution until this loop is reliable.
+
+Success condition:
+
+  wake -> speak -> transcription appears -> spoken reply -> idle
+
+Phase 2 — add one agent backend
+
+Connect exactly one existing local agent first.
+
+The first backend should support:
+
+  voice text -> agent input -> agent work -> conversational reply -> TTS
+
+Prefer an existing CLI/session mechanism over building a custom API.
+
+Keep all raw agent activity out of TTS.
+
+Success condition:
+
+The user can say a simple task, the agent performs it, and the final human-facing answer is spoken back.
+
+Phase 3 — persistent sessions and routing
+
+Add a minimal router that can:
+
+- keep track of active agent sessions
+- continue the current one
+- stop it
+- choose another installed agent
+- associate a session with a project/worktree
+
+Do not attempt natural-language routing with a large abstraction first. A small explicit state model is enough.
+
+Suggested state:
+
+  idle
+  listening
+  thinking
+  working(agent, project, session)
+  speaking
+
+Phase 4 — wake word
+
+Replace the temporary trigger with a real wake word.
+
+Requirements:
+
+- local detection
+- configurable phrase/model
+- low idle CPU
+- no continuous cloud streaming
+
+Custom speaker verification is optional and should be a separate later feature from wake-word detection.
+
+Phase 5 — boot integration
+
+Create the user service and installation path.
+
+The repository must contain enough declarative setup that a clean Omarchy machine can reproduce it.
+
+The service should:
+
+- start with the user session
+- restart on failure with sensible limits
+- log to journalctl or a simple local log
+- not require root after installation
+- expose a simple status/stop/restart workflow
+
+Phase 6 — verify
+
+Add a small verification script or documented commands that prove:
+
+- wake detector is alive
+- microphone input works
+- STT works
+- TTS works
+- one agent backend can be called
+- the service survives logout/reboot
+- no secrets were added to the repository
+
+Implementation philosophy
+
+Trace first, then build.
+
+Prefer:
+- native Linux facilities
+- small processes with clear boundaries
+- standard input/output or simple local IPC
+- idempotent install scripts
+- explicit state
+- boring code
+
+Avoid:
+- giant orchestration frameworks
+- remote infrastructure for local-only problems
+- hidden background magic
+- agent-specific architecture
+- unnecessary databases
+- duplicating capabilities KERN already provides
+
+First command for the implementing agent
+
+Read ../agent/system.md and voice/prompt.txt completely.
+
+Execute Phase 0 and Phase 1 only.
+
+Inspect the real Omarchy machine first. Then implement the smallest local wake/listen/STT/TTS loop that works on this hardware. Use a keypress or simple temporary trigger if that gets the audio loop proven faster than training a wake word.
+
+Do not add Claude, Codex, KERN routing, browser integration, or a GUI yet.
+
+Run the prototype yourself, fix failures, and record every persistent installation/configuration change back into this repository.
