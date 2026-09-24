@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """omarchy-voice: trigger -> record one utterance -> STT -> the Claude session
-in tmux pane %0 -> its answer spoken -> idle.
+in tmux window 0 -> its answer spoken -> idle.
 
   voice.py            press Enter to talk (temporary wake trigger)
   voice.py --file X   transcribe a 16 kHz mono WAV instead of the mic
   voice.py --say T    speak T and exit
-  voice.py --ask T    send T to the pane's Claude, print the spoken answer
+  voice.py --ask T    send T to the voice window's Claude, print the answer
 
 Recognition and speech run remotely on Groq (Whisper, Orpheus); this CPU is
 too slow for local models (decisions/voice-stt.md). Locally there is only
@@ -13,8 +13,9 @@ capture and a loudness check that ends the utterance. The key comes from
 GROQ_API_KEY or the keyring:
   secret-tool store --label='Groq API key' service groq key api
 
-The utterance is typed into the Claude Code session running in the tmux pane
-(OMARCHY_VOICE_PANE, default %0), so every action is visible there and goes
+The utterance is typed into the Claude Code session in window 0 ("voice") of
+the tmux session `main` (F5 0 in the cockpit goes there). The window is made
+running plain claude when missing, so every action is visible there and goes
 through that session's own permission prompts. The pane's state and
 transcript come from the tmux-claude-state hook (github.com/yesitsfebreeze/
 .files) as the pane options @claude and @claude_transcript. Any failure is
@@ -51,9 +52,13 @@ TTS_VOICE = "troy"
 TTS_MAX_CHARS = 200  # per request, Groq's limit
 TIMEOUT_S = 20
 
-# The agent is the Claude Code session the user keeps in this tmux pane.
-PANE = os.environ.get("OMARCHY_VOICE_PANE", "%0")
+# The agent is the Claude Code session in window 0 of the tmux session `main`
+# (tmux-main); the cockpit's F5 0 makes and shows the same window.
+TMUX_SESSION = "main"
+PANE = f"{TMUX_SESSION}:=0"  # the active pane of window 0, by exact index
+AGENT_CWD = os.path.expanduser("~/dev")
 AGENT_TIMEOUT_S = 900
+CLAUDE_START_S = 60
 SPOKEN_SENTENCES = 3
 
 
@@ -210,7 +215,7 @@ def pane(fmt):
     out = subprocess.run(["tmux", "display", "-p", "-t", PANE, fmt],
                          capture_output=True, text=True, timeout=5)
     if out.returncode:
-        raise Failed(f"tmux pane {PANE} is not available")
+        raise Failed(f"tmux target {PANE} is not available")
     return out.stdout.strip()
 
 
@@ -236,18 +241,59 @@ def spoken(text):
     text = re.sub(r"[`*_#>|]|^\s*[-+]\s+|\[([^\]]*)\]\([^)]*\)", r"\1", text, flags=re.M)
     sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
     short = " ".join(sentences[:SPOKEN_SENTENCES])
-    return short + (" The rest is in the pane." if len(sentences) > SPOKEN_SENTENCES else "")
+    return short + (" The rest is in the voice window." if len(sentences) > SPOKEN_SENTENCES else "")
+
+
+def claude_binary():
+    """The installed claude itself, not mise's shim, which takes half a minute
+    to hand over on this CPU."""
+    out = subprocess.run(["mise", "which", "claude"], capture_output=True, text=True, timeout=30)
+    return out.stdout.strip() or "claude"
+
+
+def ensure_claude(notify):
+    """Make window 0 running plain claude when it is missing.
+
+    Plain claude keeps its normal permission prompts (the `cc` wrapper would
+    skip them). Nothing is ever typed into a shell: a window 0 that runs
+    anything but Claude is left alone.
+    """
+    windows = subprocess.run(["tmux", "list-windows", "-t", f"={TMUX_SESSION}", "-F", "#{window_index}"],
+                             capture_output=True, text=True, timeout=5)
+    if windows.returncode:
+        raise Failed(f"tmux session {TMUX_SESSION} is not running")
+    # Asked for a missing window, `display` answers for the current one, so
+    # existence is checked by index first.
+    if "0" in windows.stdout.split():
+        command = pane("#{pane_current_command}")
+        if command == "claude":
+            return
+        raise Failed(f"window 0 is running {command}, not Claude")
+    notify("Starting Claude.")
+    subprocess.run(["tmux", "new-window", "-d", "-t", f"{TMUX_SESSION}:0", "-n", "voice",
+                    "-c", AGENT_CWD, claude_binary()], check=True, timeout=10)
+    deadline = time.monotonic() + CLAUDE_START_S
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        # SessionStart runs the hook, which records the transcript.
+        if pane("#{pane_current_command}") == "claude" and pane("#{@claude_transcript}"):
+            time.sleep(1.5)  # let the prompt take input
+            return
+    if pane("#{pane_current_command}") == "claude":
+        # Running but not ready: a first-run question such as trusting
+        # ~/dev, which is the user's to answer.
+        raise Failed("Claude is waiting for you in the voice window, F5 0")
+    raise Failed("Claude did not start")
 
 
 def ask(text, notify):
-    """Type text into the Claude session in PANE; return its final answer.
+    """Type text into the voice window's Claude; return its final answer.
 
-    The session is the user's own, visible and under its own permission
-    prompts. Nothing is typed unless Claude is the pane's program and idle,
-    so speech never reaches a shell.
+    The session is visible and under its own permission prompts. Nothing is
+    typed unless Claude is the window's program and idle, so speech never
+    reaches a shell.
     """
-    if pane("#{pane_current_command}") != "claude":
-        raise Failed(f"no Claude session in pane {PANE}")
+    ensure_claude(notify)
     if pane("#{@claude}") in ("working", "waiting"):
         raise Failed("Claude is still busy")
     transcript = pane("#{@claude_transcript}")
@@ -299,7 +345,7 @@ def main(argv):
         log(f"error: {e}")
         return 1
 
-    log(f"idle: press Enter to talk to the Claude session in tmux pane {PANE}, Ctrl-D to quit")
+    log("idle: press Enter to talk to Claude in tmux window 0 (F5 0), Ctrl-D to quit")
     while sys.stdin.readline():
         try:
             log("listening")
