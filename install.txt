@@ -1,0 +1,104 @@
+OMARCHY MACHINE AGENT INSTALLATION
+
+Goal
+
+Install this repository's machine-maintainer instruction into every agent available on this workstation and keep those integrations current.
+
+Canonical repository
+
+  https://github.com/yesitsfebreeze/omarchy
+
+Canonical local checkout
+
+  ~/.local/share/omarchy
+
+Canonical machine instruction
+
+  ~/.local/share/omarchy/agent/system.md
+
+Invariant
+
+  Every agent that can modify this workstation must receive the canonical machine instruction before doing persistent system work.
+
+  Do not maintain separate hand-edited copies of the instruction when a reference, include, or symlink is supported.
+
+Procedure
+
+1. Ensure the repository exists locally.
+
+   If it does not exist:
+
+     git clone https://github.com/yesitsfebreeze/omarchy.git ~/.local/share/omarchy
+
+   If it already exists:
+
+     git -C ~/.local/share/omarchy pull --ff-only
+
+2. Discover the agents actually installed on this machine.
+
+   Inspect PATH, desktop applications, user services, and the normal configuration directories under ~/.config and ~/.local/share.
+
+   Look for coding agents, terminal agents, editor-integrated agents, local model frontends, and other LLM tools that can act on the machine.
+
+   Do not assume a fixed list. Examples may include Claude Code, Codex, Gemini CLI, OpenCode, local-model clients, or future agents.
+
+3. For each discovered agent, determine its documented machine-wide or user-wide instruction mechanism.
+
+   Prefer, in order:
+
+   a. a native include/reference to ~/.local/share/omarchy/agent/system.md
+   b. a symlink to that file
+   c. a small managed loader file that points to or embeds the canonical instruction
+
+   Do not replace unrelated user instructions. Extend the existing configuration minimally.
+
+4. If an agent requires copied text instead of a reference, mark the managed section clearly:
+
+     BEGIN OMARCHY MACHINE INSTRUCTION
+     ...managed content...
+     END OMARCHY MACHINE INSTRUCTION
+
+   Regenerate only that managed section when the canonical instruction changes.
+
+5. Record every integration in this repository.
+
+   The repository must contain enough information to recreate the agent integration on a clean Omarchy installation. Prefer a small idempotent script or declarative config over prose describing commands that were run once.
+
+6. Keep integrations current.
+
+   Whenever this repository is updated:
+
+     git -C ~/.local/share/omarchy pull --ff-only
+
+   Then reconcile every installed agent against agent/system.md:
+
+   - references and symlinks should already point at the current file
+   - copied managed blocks must be refreshed
+   - newly installed agents must be discovered and integrated
+   - removed agents should have obsolete managed integration removed from the machine and repository
+
+7. Verify.
+
+   For every installed agent, confirm that:
+
+   - its user/global instructions load the Omarchy machine instruction
+   - the integration survives logout/reboot
+   - existing unrelated agent configuration remains intact
+   - no secret or credential was copied into this repository
+
+8. Report drift instead of hiding it.
+
+   If an agent cannot load a global instruction, its configuration format is uncertain, or the machine differs from this repository, report the mismatch and record the smallest safe follow-up needed.
+
+Rules
+
+- Keep this setup small and understandable.
+- Use each agent's native configuration mechanism where possible.
+- Do not install extra frameworks merely to distribute one instruction file.
+- Do not overwrite unrelated user configuration.
+- Never store tokens, passwords, private keys, cookies, session data, or other credentials here.
+- Any persistent change made while installing or updating these integrations must itself be represented in this repository.
+
+Completion condition
+
+A clean Omarchy installation should be able to clone this repository, run its bootstrap/install process, and end with every installed agent automatically receiving the same canonical machine-maintainer instruction.
