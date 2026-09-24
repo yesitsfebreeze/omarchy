@@ -59,7 +59,9 @@ PANE = f"{TMUX_SESSION}:=0"  # the active pane of window 0, by exact index
 AGENT_CWD = os.path.expanduser("~/dev")
 AGENT_TIMEOUT_S = 900
 CLAUDE_START_S = 60
+ANSWER_WAIT_S = 10  # after Stop, for the answer to reach the transcript
 SPOKEN_SENTENCES = 3
+SPOKEN_MAX_CHARS = 300
 
 
 class Failed(Exception):
@@ -236,12 +238,21 @@ def answers_since(transcript, offset):
 
 
 def spoken(text):
-    """The first SPOKEN_SENTENCES of an answer, without Markdown."""
+    """The start of an answer for speech: Markdown stripped, lines and
+    sentences kept whole, at most SPOKEN_SENTENCES and SPOKEN_MAX_CHARS
+    (each 200 characters is one of Groq's 100 daily speech requests)."""
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
     text = re.sub(r"[`*_#>|]|^\s*[-+]\s+|\[([^\]]*)\]\([^)]*\)", r"\1", text, flags=re.M)
-    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
-    short = " ".join(sentences[:SPOKEN_SENTENCES])
-    return short + (" The rest is in the voice window." if len(sentences) > SPOKEN_SENTENCES else "")
+    sentences = [s for line in text.splitlines() for s in re.split(r"(?<=[.!?:])\s+", line.strip()) if s]
+    kept = []
+    for sentence in sentences[:SPOKEN_SENTENCES]:
+        if kept and len(" ".join(kept + [sentence])) > SPOKEN_MAX_CHARS:
+            break
+        kept.append(sentence)
+    short = " ".join(kept)
+    if len(short) > SPOKEN_MAX_CHARS:
+        short = short[:SPOKEN_MAX_CHARS].rsplit(" ", 1)[0] + "."
+    return short + (" The rest is in the voice window." if len(kept) < len(sentences) or short != " ".join(kept) else "")
 
 
 def claude_binary():
@@ -313,8 +324,15 @@ def ask(text, notify):
             break
     else:
         raise Failed("Claude did not finish in time")
-    now = pane("#{@claude_transcript}")
-    texts = answers_since(now, offset if now == transcript else 0)
+    # The Stop hook runs before the final message reaches the transcript, so
+    # wait for text to appear there.
+    deadline = time.monotonic() + ANSWER_WAIT_S
+    while True:
+        now = pane("#{@claude_transcript}")
+        texts = answers_since(now, offset if now == transcript else 0) if os.path.exists(now) else []
+        if texts or time.monotonic() > deadline:
+            break
+        time.sleep(0.3)
     return spoken(texts[-1]) if texts else "Done."
 
 
