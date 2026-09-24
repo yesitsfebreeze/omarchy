@@ -1,1 +1,2 @@
 # One package per line. Add packages only when this machine actually needs them.
+wezterm

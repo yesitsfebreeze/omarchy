@@ -28,8 +28,10 @@ Any agent making a persistent system change should update this repository in the
 agent/system.md       machine-maintainer instruction
 mcp-bridge.txt        MCP/browser bridge implementation prompt
 packages/pacman.txt   packages required by the machine
+packages/aur.txt      AUR packages required by the machine
+config/               files linked into ~/.config (wezterm, default terminal)
 decisions/            reasons that are not obvious from configuration
-scripts/bootstrap.sh  reconstruct the machine
+scripts/bootstrap.sh  reconstruct the machine (packages, monospace font, agents)
 scripts/agents.sh     link agent/system.md into each agent's global instructions
 scripts/verify.sh     verify the repository/setup
 ```
