@@ -126,6 +126,8 @@ def call(tool, arguments):
         raise Refused(f"kern: {text[:500]}")
     if len(text.encode()) > MAX_RESULT_BYTES:
         raise Refused("result too large")
+    # kern_asp answers one "[i] <op> ok" status line per operator before its value.
+    text = re.sub(r"\A\[0\] \w+ ok\n", "", text)
     try:
         return json.loads(text)
     except ValueError:
