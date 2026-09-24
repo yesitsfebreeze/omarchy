@@ -36,6 +36,7 @@ MAX_UTTERANCE_S = 15
 MAX_WAIT_S = 5  # no speech at all
 END_SILENCE_S = 1.2  # pause that ends an utterance
 MIN_SPEECH_RMS = 400  # floor for the speech threshold; noise sets it higher
+MIN_SPEECH_S = 0.6  # shorter loud bursts (clicks, coughs) are not speech
 
 API = "https://api.groq.com/openai/v1/audio"
 STT_MODEL = "whisper-large-v3-turbo"
@@ -90,28 +91,34 @@ def rms(chunk):
 def utterance(chunks):
     """Raw s16 audio from the first loud chunk until END_SILENCE_S of quiet.
 
-    The first chunk sets the noise floor. Time is counted in audio, not wall
-    clock, so a file behaves like the mic. Empty when nobody spoke.
+    The noise floor is the quietest chunk seen before the current one, so
+    speech from the very first chunk still counts. Time is counted in audio,
+    not wall clock, so a file behaves like the mic. Empty when nobody spoke.
     """
-    audio, t, noise, spoke_at, quiet_since = bytearray(), 0.0, None, None, None
+    audio, t, noise, spoke_at, quiet_since, loud_s = bytearray(), 0.0, 0.0, None, None, 0.0
     for chunk in chunks:
-        t += len(chunk) / (2 * RATE)
+        dt = len(chunk) / (2 * RATE)
+        t += dt
         level = rms(chunk)
-        noise = level if noise is None else min(noise, level)
         loud = level > max(MIN_SPEECH_RMS, 3 * noise)
+        if not loud:  # only quiet chunks teach the noise floor
+            noise = level if noise == 0.0 else min(noise, level)
         if spoke_at is None:
             if loud:
-                spoke_at, audio = t, bytearray(audio[-CHUNK:])  # keep the onset
+                spoke_at, loud_s, audio = t, 0.0, bytearray(audio[-CHUNK:])  # keep the onset
             elif t > MAX_WAIT_S:
                 return b""
         audio += chunk
         if spoke_at is not None:
+            loud_s += dt if loud else 0.0
             quiet_since = None if loud else (quiet_since or t)
             if quiet_since and t - quiet_since > END_SILENCE_S:
-                break
+                if loud_s >= MIN_SPEECH_S:
+                    break
+                spoke_at, quiet_since = None, None  # a click or cough: keep waiting
         if t > MAX_UTTERANCE_S:
             break
-    return bytes(audio) if spoke_at is not None else b""
+    return bytes(audio) if spoke_at is not None and loud_s >= MIN_SPEECH_S else b""
 
 
 def transcribe(audio):
